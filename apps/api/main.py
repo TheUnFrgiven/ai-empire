@@ -21,11 +21,12 @@ app.add_middleware(
 )
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 COUNCIL_MODELS = [
     "openai/gpt-4o-mini",
-    "google/gemini-flash-1.5",
+    "openrouter/free",
 ]
 
 
@@ -76,7 +77,6 @@ def call_openrouter(prompt: str, model: str):
         return {
             "answer": "",
             "error": data,
-            "raw": data,
         }
 
     answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -84,7 +84,6 @@ def call_openrouter(prompt: str, model: str):
     return {
         "answer": answer,
         "error": None,
-        "raw": data,
     }
 
 
@@ -145,4 +144,67 @@ def chat_council(req: ChatRequest):
     return {
         "mode": "council",
         "answer": results,
+    }
+
+
+@app.post("/chat/council/debate")
+def chat_council_debate(req: ChatRequest):
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    round1 = {}
+
+    for model in COUNCIL_MODELS:
+        first_prompt = f"""
+User question:
+{req.prompt}
+
+Answer independently. Be clear, useful, and concise.
+Do not mention other models.
+"""
+
+        result = call_openrouter(first_prompt, model)
+
+        round1[model] = {
+            "answer": result["answer"],
+            "error": result["error"],
+        }
+
+    combined_answers = "\n\n".join(
+        [
+            f"Model: {model}\nAnswer: {data['answer']}"
+            for model, data in round1.items()
+        ]
+    )
+
+    round2 = {}
+
+    for model in COUNCIL_MODELS:
+        revision_prompt = f"""
+User question:
+{req.prompt}
+
+Here are the first-round answers from the council:
+
+{combined_answers}
+
+Your task:
+1. Compare the answers.
+2. Notice missing points or weak parts.
+3. Revise your own answer into a stronger final answer.
+4. Do not reveal hidden reasoning.
+5. Return only the improved answer.
+"""
+
+        result = call_openrouter(revision_prompt, model)
+
+        round2[model] = {
+            "answer": result["answer"],
+            "error": result["error"],
+        }
+
+    return {
+        "mode": "council_debate",
+        "round1": round1,
+        "round2": round2,
     }
