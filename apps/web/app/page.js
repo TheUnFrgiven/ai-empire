@@ -7,6 +7,7 @@ export default function Page() {
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState("cloud");
   const [answer, setAnswer] = useState(null);
+  const [smartSuggestion, setSmartSuggestion] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -16,7 +17,43 @@ export default function Page() {
     debate: "http://localhost:8000/chat/council/debate"
   };
 
-  async function sendPrompt() {
+  async function analyzeSmartMode() {
+    setError("");
+    setAnswer(null);
+    setSmartSuggestion(null);
+
+    if (!prompt.trim()) {
+      setError("Please write a prompt first.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const res = await fetch("http://localhost:8000/chat/smart/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ prompt })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || "Smart analysis failed");
+      }
+
+      setSmartSuggestion(data);
+      setMode(data.suggested_mode);
+    } catch (err) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function sendPrompt(selectedMode = mode) {
     setError("");
     setAnswer(null);
 
@@ -28,7 +65,7 @@ export default function Page() {
     setLoading(true);
 
     try {
-      const res = await fetch(endpoints[mode], {
+      const res = await fetch(endpoints[selectedMode], {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -63,6 +100,50 @@ export default function Page() {
     );
   }
 
+  function renderSmartSuggestion() {
+  if (!smartSuggestion) return null;
+
+  const matches = smartSuggestion.matches || {};
+  const selectedMatches = matches[smartSuggestion.suggested_mode] || [];
+  const topReasons = selectedMatches.slice(0, 4);
+
+  return (
+    <div className="answerBox">
+      <h2>Smart Recommendation</h2>
+
+      <p>
+        Recommended mode: <strong>{smartSuggestion.suggested_mode}</strong>
+      </p>
+
+      <p>
+  Based on your prompt, this looks like a{" "}
+  <strong>{smartSuggestion.suggested_mode}</strong> type task.
+</p>
+
+      {topReasons.length > 0 && (
+        <>
+          <h3>Main signals found</h3>
+          <ul>
+            {topReasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div className="modeRow">
+        <button onClick={() => sendPrompt(smartSuggestion.suggested_mode)}>
+          Use {smartSuggestion.suggested_mode}
+        </button>
+
+        <button onClick={() => sendPrompt("cloud")}>Use Cloud</button>
+        <button onClick={() => sendPrompt("council")}>Use Council</button>
+        <button onClick={() => sendPrompt("debate")}>Use Debate</button>
+      </div>
+    </div>
+  );
+}
+
   function renderAnswer() {
     if (!answer) return null;
 
@@ -76,21 +157,28 @@ export default function Page() {
       );
     }
 
-    if (answer.mode === "council_debate") {
-      return (
+   if (answer.mode === "council_debate") {
+  return (
+    <>
+      {answer.final_answer && (
         <>
-          <h3>Round 1: Independent Answers</h3>
-          {Object.entries(answer.round1 || {}).map(([model, result]) =>
-            renderModelResult(model, result)
-          )}
-
-          <h3>Round 2: Revised Answers</h3>
-          {Object.entries(answer.round2 || {}).map(([model, result]) =>
-            renderModelResult(model, result)
-          )}
+          <h3>Final Answer</h3>
+          <pre>{answer.final_answer}</pre>
         </>
-      );
-    }
+      )}
+
+      <h3>Round 1: Independent Answers</h3>
+      {Object.entries(answer.round1 || {}).map(([model, result]) =>
+        renderModelResult(model, result)
+      )}
+
+      <h3>Round 2: Revised Answers</h3>
+      {Object.entries(answer.round2 || {}).map(([model, result]) =>
+        renderModelResult(model, result)
+      )}
+    </>
+  );
+}
 
     return <pre>{JSON.stringify(answer, null, 2)}</pre>;
   }
@@ -100,7 +188,7 @@ export default function Page() {
       <section className="card">
         <h1>AI Council</h1>
         <p className="subtitle">
-          Send a prompt to Cloud, Council, or Debate mode.
+          Send manually, or use Smart Mode to get a recommendation first.
         </p>
 
         <div className="modeRow">
@@ -132,11 +220,17 @@ export default function Page() {
           placeholder="Write your prompt here..."
         />
 
-        <button className="sendBtn" onClick={sendPrompt} disabled={loading}>
-          {loading ? "Thinking..." : "Send"}
+        <button className="sendBtn" onClick={() => sendPrompt()} disabled={loading}>
+          {loading ? "Working..." : `Send with ${mode}`}
+        </button>
+
+        <button className="sendBtn" onClick={analyzeSmartMode} disabled={loading}>
+          Smart Analyze First
         </button>
 
         {error && <div className="error">{error}</div>}
+
+        {renderSmartSuggestion()}
 
         {answer && (
           <div className="answerBox">
