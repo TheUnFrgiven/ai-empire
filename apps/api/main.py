@@ -1,6 +1,7 @@
 import os
 import requests
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -8,26 +9,42 @@ load_dotenv()
 
 app = FastAPI(title="AI Empire API")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+
 class ChatRequest(BaseModel):
-    message: str
+    prompt: str
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/")
 def root():
     return {"message": "AI Empire API running"}
+
 
 @app.get("/providers")
 def providers():
     return {
         "openrouter": True,
         "ollama": False,
-        "claude_direct": False
+        "claude_direct": False,
     }
+
 
 @app.post("/chat/cloud")
 def chat_cloud(req: ChatRequest):
@@ -37,16 +54,22 @@ def chat_cloud(req: ChatRequest):
 
     payload = {
         "model": "openai/gpt-4o-mini",
-        "messages": [{"role": "user", "content": req.message}]
+        "messages": [{"role": "user", "content": req.prompt}],
     }
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-    return r.json()
+    data = r.json()
+
+    return {
+        "answer": data.get("choices", [{}])[0].get("message", {}).get("content", ""),
+        "raw": data,
+    }
+
 
 @app.post("/chat/council")
 def chat_council(req: ChatRequest):
@@ -63,18 +86,22 @@ def chat_council(req: ChatRequest):
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     for model in models:
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": req.message}]
+            "messages": [{"role": "user", "content": req.prompt}],
         }
+
         try:
             r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-            results[model] = r.json()
+            data = r.json()
+            results[model] = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         except Exception as e:
-            results[model] = {"error": str(e)}
+            results[model] = f"Error: {str(e)}"
 
-    return results
+    return {
+        "answer": results,
+    }
