@@ -10,6 +10,12 @@ export default function Page() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const endpoints = {
+    cloud: "http://localhost:8000/chat/cloud",
+    council: "http://localhost:8000/chat/council",
+    debate: "http://localhost:8000/chat/council/debate"
+  };
+
   async function sendPrompt() {
     setError("");
     setAnswer(null);
@@ -22,12 +28,7 @@ export default function Page() {
     setLoading(true);
 
     try {
-      const endpoint =
-        mode === "cloud"
-          ? "http://localhost:8000/chat/cloud"
-          : "http://localhost:8000/chat/council";
-
-      const res = await fetch(endpoint, {
+      const res = await fetch(endpoints[mode], {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -41,7 +42,7 @@ export default function Page() {
         throw new Error(data.detail || data.error || "Request failed");
       }
 
-      setAnswer(data.answer || data);
+      setAnswer(data);
     } catch (err) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -49,12 +50,8 @@ export default function Page() {
     }
   }
 
-  function renderAnswer() {
-    if (typeof answer === "string") {
-      return <pre>{answer}</pre>;
-    }
-
-    return Object.entries(answer).map(([model, result]) => (
+  function renderModelResult(model, result) {
+    return (
       <div key={model} style={{ marginBottom: "18px" }}>
         <strong>{model}</strong>
         <p>
@@ -63,14 +60,48 @@ export default function Page() {
             : result.answer || JSON.stringify(result, null, 2)}
         </p>
       </div>
-    ));
+    );
+  }
+
+  function renderAnswer() {
+    if (!answer) return null;
+
+    if (answer.mode === "cloud") {
+      return <pre>{answer.answer}</pre>;
+    }
+
+    if (answer.mode === "council") {
+      return Object.entries(answer.answer || {}).map(([model, result]) =>
+        renderModelResult(model, result)
+      );
+    }
+
+    if (answer.mode === "council_debate") {
+      return (
+        <>
+          <h3>Round 1: Independent Answers</h3>
+          {Object.entries(answer.round1 || {}).map(([model, result]) =>
+            renderModelResult(model, result)
+          )}
+
+          <h3>Round 2: Revised Answers</h3>
+          {Object.entries(answer.round2 || {}).map(([model, result]) =>
+            renderModelResult(model, result)
+          )}
+        </>
+      );
+    }
+
+    return <pre>{JSON.stringify(answer, null, 2)}</pre>;
   }
 
   return (
     <main className="page">
       <section className="card">
         <h1>AI Council</h1>
-        <p className="subtitle">Send a prompt to Cloud or Council mode.</p>
+        <p className="subtitle">
+          Send a prompt to Cloud, Council, or Debate mode.
+        </p>
 
         <div className="modeRow">
           <button
@@ -85,6 +116,13 @@ export default function Page() {
             onClick={() => setMode("council")}
           >
             Chat Council
+          </button>
+
+          <button
+            className={mode === "debate" ? "active" : ""}
+            onClick={() => setMode("debate")}
+          >
+            Chat Debate
           </button>
         </div>
 
