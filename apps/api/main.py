@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -59,6 +60,7 @@ COUNCIL_MODELS = [
 # This list is a suggestion set — models may also propose custom roles.
 # ─────────────────────────────────────────────────────────────────────────────
 AVAILABLE_ROLES = [
+    "General Analyst", # neutral fallback role for broad questions
     "Analyst",        # logical, evidence-based, data-driven
     "Critic",         # finds flaws, challenges assumptions, devil's advocate
     "Strategist",     # long-term thinking, systems, planning
@@ -257,7 +259,7 @@ Rules:
         raw = (data.get("answer") or "").strip().strip('"').strip("'").strip()
         # Sanitize: if empty or suspiciously long, fall back to Analyst
         if not raw or len(raw) > 35:
-            raw = "Analyst"
+            raw = "General Analyst"
         # Capitalize cleanly
         negotiated[model_id] = raw.title()
 
@@ -362,12 +364,13 @@ def providers():
     }
 
 
-@app.post("/chat/smart/analyze")
-def smart_analyze(req: ChatRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-
-    text = req.prompt.lower()
+def keyword_smart_analyze(prompt: str) -> dict:
+    """
+    Safe fallback smart-mode classifier.
+    This preserves the old keyword system so Smart Analyze still works even if
+    the AI classifier fails, returns bad JSON, or OpenRouter is unavailable.
+    """
+    text = prompt.lower()
     scores = {"cloud": 0, "council": 0, "debate": 0}
     matches = {"cloud": [], "council": [], "debate": []}
 
@@ -402,9 +405,114 @@ def smart_analyze(req: ChatRequest):
         "suggested_mode": suggested_mode,
         "scores": scores,
         "matches": matches,
-        "message": f"Smart Mode recommends {suggested_mode} based on prompt length and detected keywords.",
+        "task_type": "unknown",
+        "complexity": "low" if suggested_mode == "cloud" else "medium" if suggested_mode == "council" else "high",
+        "risk_level": "low",
+        "reason": f"Keyword fallback recommends {suggested_mode} based on prompt length and detected keywords.",
+        "needs_tools": [],
+        "fallback_mode": "cloud" if suggested_mode != "cloud" else "council",
+        "classifier": "keyword_fallback",
+        "message": f"Smart Mode recommends {suggested_mode} using fallback keyword analysis.",
     }
 
+
+def normalize_smart_mode(data: dict, fallback: dict) -> dict:
+    """
+    Sanitizes AI classifier output so the frontend always receives a stable shape.
+    """
+    allowed_modes = {"cloud", "council", "debate"}
+    allowed_complexity = {"low", "medium", "high"}
+    allowed_risk = {"low", "medium", "high"}
+
+    suggested_mode = str(data.get("suggested_mode", "")).lower().strip()
+    if suggested_mode not in allowed_modes:
+        suggested_mode = fallback["suggested_mode"]
+
+    fallback_mode = str(data.get("fallback_mode", fallback.get("fallback_mode", "cloud"))).lower().strip()
+    if fallback_mode not in allowed_modes:
+        fallback_mode = fallback.get("fallback_mode", "cloud")
+
+    complexity = str(data.get("complexity", fallback.get("complexity", "medium"))).lower().strip()
+    if complexity not in allowed_complexity:
+        complexity = fallback.get("complexity", "medium")
+
+    risk_level = str(data.get("risk_level", fallback.get("risk_level", "low"))).lower().strip()
+    if risk_level not in allowed_risk:
+        risk_level = fallback.get("risk_level", "low")
+
+    needs_tools = data.get("needs_tools", [])
+    if not isinstance(needs_tools, list):
+        needs_tools = []
+    needs_tools = [str(tool).strip() for tool in needs_tools if str(tool).strip()][:6]
+
+    reason = str(data.get("reason", fallback.get("reason", ""))).strip()
+    if not reason:
+        reason = fallback.get("reason", "Smart Mode selected the most suitable mode.")
+
+    task_type = str(data.get("task_type", fallback.get("task_type", "unknown"))).strip() or "unknown"
+
+    return {
+        "suggested_mode": suggested_mode,
+        "scores": fallback["scores"],
+        "matches": fallback["matches"],
+        "task_type": task_type,
+        "complexity": complexity,
+        "risk_level": risk_level,
+        "reason": reason,
+        "needs_tools": needs_tools,
+        "fallback_mode": fallback_mode,
+        "classifier": "ai",
+        "message": f"Smart Mode recommends {suggested_mode}: {reason}",
+    }
+
+
+@app.post("/chat/smart/analyze")
+def smart_analyze(req: ChatRequest):
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    fallback = keyword_smart_analyze(req.prompt)
+
+    classifier_prompt = f"""You are the routing brain for an AI Council app.
+
+Choose the best mode for the user's prompt:
+- cloud: simple, fast, direct answers; definitions; small fixes; casual questions.
+- council: comparisons, recommendations, reviews, multi-perspective opinions.
+- debate: complex planning, architecture, risks, strategy, safety, security, legal/medical/financial caution, major decisions, or anything needing critique.
+
+Return ONLY valid JSON with this exact shape:
+{{
+  "suggested_mode": "cloud" | "council" | "debate",
+  "task_type": "short_label",
+  "complexity": "low" | "medium" | "high",
+  "risk_level": "low" | "medium" | "high",
+  "reason": "one short sentence",
+  "needs_tools": ["optional_tool_labels"],
+  "fallback_mode": "cloud" | "council" | "debate"
+}}
+
+User prompt:
+{req.prompt}
+"""
+
+    system_prompt = (
+        "You classify user prompts for routing. "
+        "Do not answer the prompt. Return strict JSON only. No markdown."
+    )
+
+    result = call_openrouter(classifier_prompt, DEFAULT_MODEL, system_prompt)
+    raw = (result.get("answer") or "").strip()
+
+    if result.get("error") or not raw:
+        return fallback
+
+    try:
+        # Handles accidental fenced JSON without trusting prose around it.
+        cleaned = raw.replace("```json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        return normalize_smart_mode(data, fallback)
+    except Exception:
+        return fallback
 
 @app.post("/chat/cloud")
 def chat_cloud(req: ChatRequest):
