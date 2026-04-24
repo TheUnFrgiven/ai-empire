@@ -13,7 +13,7 @@ apps/api/venv
 # Environment variables
 .env
 .env.local
-.env.production
+*.env
 
 # Logs
 *.log
