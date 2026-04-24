@@ -7,19 +7,47 @@ try:
     from .providers.grok import GrokProvider
     from .providers.groq_provider import GroqProvider
     from .providers.ollama import OllamaProvider
+    from .providers.openrouter import OpenRouterProvider
 except ImportError:
     from providers.gemini import GeminiProvider
     from providers.grok import GrokProvider
     from providers.groq_provider import GroqProvider
     from providers.ollama import OllamaProvider
+    from providers.openrouter import OpenRouterProvider
 
 
-COUNCIL_PROVIDERS = [
+DIRECT_PROVIDERS = [
     GeminiProvider(),
     GrokProvider(),
     GroqProvider(),
     OllamaProvider(),
 ]
+
+OPENROUTER_PROVIDERS = [
+    OpenRouterProvider("OpenRouter OpenAI", os.getenv("OPENROUTER_OPENAI_MODEL", "openai/gpt-4o-mini")),
+    OpenRouterProvider("OpenRouter Mistral", os.getenv("OPENROUTER_MISTRAL_MODEL", "mistralai/mistral-small-2603")),
+    OpenRouterProvider("OpenRouter Llama", os.getenv("OPENROUTER_LLAMA_MODEL", "meta-llama/llama-4-scout")),
+]
+
+
+def council_providers() -> list:
+    """
+    Prefer reliable OpenRouter-backed diversity plus local Ollama.
+    Direct vendor providers can be enabled once their keys/quotas are healthy.
+    """
+    providers = []
+    if os.getenv("OPENROUTER_API_KEY", "").strip():
+        providers.extend(OPENROUTER_PROVIDERS)
+
+    providers.append(OllamaProvider())
+
+    if os.getenv("ENABLE_DIRECT_PROVIDERS", "").lower() in {"1", "true", "yes"}:
+        providers.extend([GeminiProvider(), GrokProvider(), GroqProvider()])
+
+    return providers
+
+
+COUNCIL_PROVIDERS = council_providers()
 
 ROLE_CATALOG = [
     "Strategist",
@@ -35,7 +63,7 @@ ROLE_CATALOG = [
 
 
 def _provider_map() -> dict:
-    return {provider.provider_name: provider for provider in COUNCIL_PROVIDERS}
+    return {provider.provider_name: provider for provider in council_providers()}
 
 
 def _call_provider(provider, prompt: str) -> dict:
@@ -60,7 +88,7 @@ def _call_provider(provider, prompt: str) -> dict:
 def provider_health() -> list:
     """Return lightweight provider availability without making model calls."""
     health = []
-    for provider in COUNCIL_PROVIDERS:
+    for provider in council_providers():
         missing = []
         if provider.provider_name == "Gemini":
             missing = ["GEMINI_API_KEY"] if not os.getenv("GEMINI_API_KEY") else []
@@ -68,6 +96,8 @@ def provider_health() -> list:
             missing = ["XAI_API_KEY"] if not os.getenv("XAI_API_KEY") else []
         elif provider.provider_name == "Groq":
             missing = ["GROQ_API_KEY"] if not os.getenv("GROQ_API_KEY") else []
+        elif provider.provider_name.startswith("OpenRouter"):
+            missing = ["OPENROUTER_API_KEY"] if not os.getenv("OPENROUTER_API_KEY") else []
 
         health.append({
             "provider": provider.provider_name,
@@ -90,7 +120,7 @@ def _fallback_role(prompt: str, provider_name: str) -> str:
     else:
         defaults = ["Strategist", "Critic", "Pragmatist", "Domain Expert"]
 
-    names = [provider.provider_name for provider in COUNCIL_PROVIDERS]
+    names = [provider.provider_name for provider in council_providers()]
     index = names.index(provider_name) if provider_name in names else 0
     return defaults[index % len(defaults)]
 
@@ -136,10 +166,11 @@ Return only JSON:
 """
     proposals = []
 
-    with ThreadPoolExecutor(max_workers=len(COUNCIL_PROVIDERS)) as executor:
+    providers = council_providers()
+    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
         futures = {
             executor.submit(_call_provider, provider, role_prompt): provider
-            for provider in COUNCIL_PROVIDERS
+            for provider in providers
         }
         for future in as_completed(futures):
             provider = futures[future]
@@ -189,8 +220,9 @@ Do not mention internal council mechanics."""
         result["role"] = role
         return result
 
-    with ThreadPoolExecutor(max_workers=len(COUNCIL_PROVIDERS)) as executor:
-        futures = {executor.submit(_call, provider): provider for provider in COUNCIL_PROVIDERS}
+    providers = council_providers()
+    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+        futures = {executor.submit(_call, provider): provider for provider in providers}
         for future in as_completed(futures):
             results.append(future.result())
 
@@ -291,11 +323,10 @@ Generate a single final answer that:
 
 Return only the final answer."""
 
-    for provider in COUNCIL_PROVIDERS:
-        if provider.provider_name in {"Gemini", "Groq", "Grok"}:
-            result = _call_provider(provider, synthesis_prompt)
-            if result["text"] and not result["error"]:
-                return result["text"]
+    for provider in council_providers():
+        result = _call_provider(provider, synthesis_prompt)
+        if result["text"] and not result["error"]:
+            return result["text"]
 
     return answers_text
 
