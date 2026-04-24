@@ -3,11 +3,12 @@ model_list:
     litellm_params:
       model: gpt-3.5-turbo
       api_key: os.environ/OPENAI_API_KEY
+
   - model_name: gpt-4
     litellm_params:
       model: gpt-4
       api_key: os.environ/OPENAI_API_KEY
 
 general_settings:
-  master_key: sk-1234  # Change this to a secure key
-  database_url: "sqlite:///litellm.db"  # Or your preferred database
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
