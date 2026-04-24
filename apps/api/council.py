@@ -5,13 +5,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     from .providers.gemini import GeminiProvider
     from .providers.grok import GrokProvider
-    from .providers.groq_provider import GroqProvider
     from .providers.ollama import OllamaProvider
     from .providers.openrouter import OpenRouterProvider
 except ImportError:
     from providers.gemini import GeminiProvider
     from providers.grok import GrokProvider
-    from providers.groq_provider import GroqProvider
     from providers.ollama import OllamaProvider
     from providers.openrouter import OpenRouterProvider
 
@@ -19,7 +17,6 @@ except ImportError:
 DIRECT_PROVIDERS = [
     GeminiProvider(),
     GrokProvider(),
-    GroqProvider(),
     OllamaProvider(),
 ]
 
@@ -42,7 +39,7 @@ def council_providers() -> list:
     providers.append(OllamaProvider())
 
     if os.getenv("ENABLE_DIRECT_PROVIDERS", "").lower() in {"1", "true", "yes"}:
-        providers.extend([GeminiProvider(), GrokProvider(), GroqProvider()])
+        providers.extend([GeminiProvider(), GrokProvider()])
 
     return providers
 
@@ -94,8 +91,6 @@ def provider_health() -> list:
             missing = ["GEMINI_API_KEY"] if not os.getenv("GEMINI_API_KEY") else []
         elif provider.provider_name == "Grok":
             missing = ["XAI_API_KEY"] if not os.getenv("XAI_API_KEY") else []
-        elif provider.provider_name == "Groq":
-            missing = ["GROQ_API_KEY"] if not os.getenv("GROQ_API_KEY") else []
         elif provider.provider_name.startswith("OpenRouter"):
             missing = ["OPENROUTER_API_KEY"] if not os.getenv("OPENROUTER_API_KEY") else []
 

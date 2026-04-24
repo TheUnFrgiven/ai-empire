@@ -3,5 +3,4 @@ uvicorn
 requests
 python-dotenv
 google-genai
-groq
 pytest
