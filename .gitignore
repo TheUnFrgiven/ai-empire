@@ -17,6 +17,7 @@ apps/api/venv
 
 # Logs
 *.log
+*.err
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

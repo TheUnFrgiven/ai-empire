@@ -1,12 +1,18 @@
-import os
 import json
+import os
+from typing import Any, Optional
+
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+try:
+    from .council import provider_health, run_council, run_parallel_answers
+except ImportError:
+    from council import provider_health, run_council, run_parallel_answers
+
 
 load_dotenv()
 
@@ -24,56 +30,9 @@ app.add_middleware(
 )
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-REQUEST_TIMEOUT = 65
+DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+REQUEST_TIMEOUT = int(os.getenv("AI_REQUEST_TIMEOUT", "65"))
 
-DEFAULT_MODEL = "openai/gpt-4o-mini"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# COUNCIL MODELS
-# Three models from genuinely different providers/architectures.
-# Previously: 2 OpenAI models (same lab, same values, minimal real disagreement).
-# Now: OpenAI + Mistral AI + Meta — different training, different perspectives.
-# All three are available on OpenRouter. The free-tier variants are used for
-# Mistral and LLaMA to keep costs low; swap to paid versions for better quality.
-# ─────────────────────────────────────────────────────────────────────────────
-COUNCIL_MODELS = [
-    {
-        "id": "openai/gpt-4o-mini",
-        "label": "GPT-4o Mini",
-        "provider": "OpenAI",
-    },
-    {
-        "id": "mistralai/mistral-7b-instruct:free",
-        "label": "Mistral 7B",
-        "provider": "Mistral AI",
-    },
-    {
-        "id": "meta-llama/llama-3.1-8b-instruct:free",
-        "label": "LLaMA 3.1 8B",
-        "provider": "Meta",
-    },
-]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AVAILABLE ROLES FOR ROUND 0 NEGOTIATION
-# Each model proposes its own role based on the user's prompt.
-# This list is a suggestion set — models may also propose custom roles.
-# ─────────────────────────────────────────────────────────────────────────────
-AVAILABLE_ROLES = [
-    "General Analyst", # neutral fallback role for broad questions
-    "Analyst",        # logical, evidence-based, data-driven
-    "Critic",         # finds flaws, challenges assumptions, devil's advocate
-    "Strategist",     # long-term thinking, systems, planning
-    "Creative",       # unconventional angles, novel solutions
-    "Risk Analyst",   # identifies dangers, downsides, edge cases
-    "Pragmatist",     # practical, cost-aware, real-world constraints
-    "Domain Expert",  # deep knowledge, technical precision
-]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SMART MODE KEYWORDS (unchanged from original)
-# ─────────────────────────────────────────────────────────────────────────────
 CLOUD_KEYWORDS = [
     "hi", "hello", "hey", "bye", "thanks", "thank you", "what is", "define",
     "meaning", "explain", "simple", "quick", "short", "basic", "beginner",
@@ -109,267 +68,59 @@ DEBATE_KEYWORDS = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CORE API CALL
-# Now accepts an optional system_prompt — this is what gives each model
-# its identity and role in council/debate mode.
-# ─────────────────────────────────────────────────────────────────────────────
-def get_openrouter_key():
-    api_key = os.getenv("OPENROUTER_API_KEY")
+class ChatRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=20000)
+
+
+def _clean_prompt(prompt: str) -> str:
+    cleaned = prompt.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    return cleaned
+
+
+def _openrouter_key() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Missing OPENROUTER_API_KEY in .env",
-        )
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY is not configured")
     return api_key
 
 
-def call_openrouter(
-    prompt: str,
-    model: str,
-    system_prompt: Optional[str] = None,
-):
-    api_key = get_openrouter_key()
-
+def call_openrouter(prompt: str, model: str = DEFAULT_MODEL, system_prompt: Optional[str] = None) -> dict:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    payload = {"model": model, "messages": messages}
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
     try:
         response = requests.post(
             OPENROUTER_URL,
-            json=payload,
-            headers=headers,
+            json={"model": model, "messages": messages},
+            headers={
+                "Authorization": f"Bearer {_openrouter_key()}",
+                "Content-Type": "application/json",
+            },
             timeout=REQUEST_TIMEOUT,
         )
-
-        try:
-            data = response.json()
-        except Exception:
-            return {"answer": "", "error": "OpenRouter returned a non-JSON response."}
-
-        if not response.ok:
-            return {"answer": "", "error": data}
-
-        answer = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
-        return {"answer": answer, "error": None}
-
     except requests.exceptions.Timeout:
         return {"answer": "", "error": f"Request timed out after {REQUEST_TIMEOUT}s."}
-    except requests.exceptions.RequestException as e:
-        return {"answer": "", "error": f"Network error: {str(e)}"}
-    except Exception as e:
-        return {"answer": "", "error": str(e)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PARALLEL COUNCIL CALL
-# Previously all models were called sequentially. This was the biggest latency
-# problem — 3 models × 2 rounds = potentially 6 serial API calls.
-#
-# Now all models in a round are called simultaneously with ThreadPoolExecutor.
-# Round 1 (3 models): ~same time as 1 call instead of 3x.
-# Round 2 (3 models): same gain.
-# Rough time saving: ~60-70% reduction in total debate latency.
-#
-# system_prompts: {model_id: system_prompt_string} — optional per-model prompts
-# ─────────────────────────────────────────────────────────────────────────────
-def parallel_council_call(
-    prompt: str,
-    system_prompts: Optional[dict] = None,
-    max_workers: int = 3,
-) -> dict:
-    results = {}
-
-    def _call(model_info: dict):
-        sys_prompt = (system_prompts or {}).get(model_info["id"])
-        result = call_openrouter(prompt, model_info["id"], sys_prompt)
-        return model_info["id"], result
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_call, model_info): model_info
-            for model_info in COUNCIL_MODELS
-        }
-        for future in as_completed(futures):
-            model_info = futures[future]
-            try:
-                model_id, result = future.result()
-                results[model_id] = {
-                    "answer": result["answer"],
-                    "error": result["error"],
-                    "label": model_info["label"],
-                    "provider": model_info["provider"],
-                }
-            except Exception as e:
-                results[model_info["id"]] = {
-                    "answer": "",
-                    "error": str(e),
-                    "label": model_info["label"],
-                    "provider": model_info["provider"],
-                }
-
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ROUND 0: ROLE NEGOTIATION
-# This is the "autonomous council" feature. Instead of manually assigning
-# roles, each model reads the prompt and proposes the role it would be
-# most useful playing.
-#
-# Why this matters: a question about security risks should organically produce
-# a Risk Analyst, not have one forced by static config. The role each model
-# chooses reveals what it "sees" in the prompt — which is itself informative.
-#
-# Returns: {model_id: role_string}
-# ─────────────────────────────────────────────────────────────────────────────
-def negotiate_roles(prompt: str) -> dict:
-    role_prompt = f"""You are about to join an AI reasoning council to answer a question.
-
-The question is:
-{prompt}
-
-Available roles: {", ".join(AVAILABLE_ROLES)}
-
-Choose the single role YOU would be most useful playing for this specific question.
-You may propose a custom role (2-3 words max) if none of the above fit well.
-
-Rules:
-- Respond with ONLY the role name. Nothing else.
-- No explanation, no punctuation, no quotes.
-- Example valid responses: "Risk Analyst" or "Critic" or "Domain Expert"
-"""
-
-    raw_roles = parallel_council_call(role_prompt)
-    negotiated = {}
-
-    for model_id, data in raw_roles.items():
-        raw = (data.get("answer") or "").strip().strip('"').strip("'").strip()
-        # Sanitize: if empty or suspiciously long, fall back to Analyst
-        if not raw or len(raw) > 35:
-            raw = "General Analyst"
-        # Capitalize cleanly
-        negotiated[model_id] = raw.title()
-
-    return negotiated
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SYNTHESIS PARSER
-# The synthesis prompt asks the model to return structured sections.
-# This function extracts those sections cleanly so the frontend can
-# display disagreements and consensus separately — making the debate auditable.
-# ─────────────────────────────────────────────────────────────────────────────
-def parse_synthesis(raw: str) -> dict:
-    disagreements = []
-    consensus_points = []
-    final_answer = raw
-    confidence = "Medium"
-    confidence_reason = ""
+    except requests.exceptions.RequestException as exc:
+        return {"answer": "", "error": f"Network error: {exc}"}
 
     try:
-        if "POINTS OF GENUINE DISAGREEMENT:" in raw:
-            block = raw.split("POINTS OF GENUINE DISAGREEMENT:")[1]
-            if "POINTS OF CONSENSUS:" in block:
-                disagreement_text = block.split("POINTS OF CONSENSUS:")[0]
-                disagreements = [
-                    line.strip().lstrip("-").strip()
-                    for line in disagreement_text.strip().splitlines()
-                    if line.strip() and line.strip() not in ("-", "")
-                ]
+        data: dict[str, Any] = response.json()
+    except ValueError:
+        return {"answer": "", "error": "OpenRouter returned a non-JSON response."}
 
-        if "POINTS OF CONSENSUS:" in raw:
-            block = raw.split("POINTS OF CONSENSUS:")[1]
-            if "FINAL ANSWER:" in block:
-                consensus_text = block.split("FINAL ANSWER:")[0]
-                consensus_points = [
-                    line.strip().lstrip("-").strip()
-                    for line in consensus_text.strip().splitlines()
-                    if line.strip() and line.strip() not in ("-", "")
-                ]
+    if not response.ok:
+        message = data.get("error", {}).get("message") if isinstance(data.get("error"), dict) else None
+        return {"answer": "", "error": message or f"OpenRouter error {response.status_code}"}
 
-        if "FINAL ANSWER:" in raw:
-            answer_block = raw.split("FINAL ANSWER:")[1]
-            if "CONFIDENCE:" in answer_block:
-                final_answer = answer_block.split("CONFIDENCE:")[0].strip()
-                confidence_block = answer_block.split("CONFIDENCE:")[1]
-                conf_line = confidence_block.strip().splitlines()[0].strip()
-                confidence = conf_line.split("/")[0].strip()
-                if "CONFIDENCE REASON:" in confidence_block:
-                    confidence_reason = (
-                        confidence_block.split("CONFIDENCE REASON:")[1]
-                        .strip()
-                        .splitlines()[0]
-                        .strip()
-                    )
-            else:
-                final_answer = answer_block.strip()
-
-    except Exception:
-        pass  # Parsing failed — return raw as final_answer
-
-    return {
-        "final_answer": final_answer or raw,
-        "disagreements": [d for d in disagreements if d],
-        "consensus_points": [c for c in consensus_points if c],
-        "confidence": confidence,
-        "confidence_reason": confidence_reason,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ChatRequest(BaseModel):
-    prompt: str
-
-
-@app.get("/")
-def root():
-    return {"message": "AI Empire API running"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/providers")
-def providers():
-    return {
-        "openrouter": True,
-        "ollama": False,
-        "claude_direct": False,
-        "models": [
-            {
-                "id": m["id"],
-                "label": m["label"],
-                "provider": m["provider"],
-            }
-            for m in COUNCIL_MODELS
-        ],
-    }
+    answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return {"answer": answer or "", "error": None}
 
 
 def keyword_smart_analyze(prompt: str) -> dict:
-    """
-    Safe fallback smart-mode classifier.
-    This preserves the old keyword system so Smart Analyze still works even if
-    the AI classifier fails, returns bad JSON, or OpenRouter is unavailable.
-    """
     text = prompt.lower()
     scores = {"cloud": 0, "council": 0, "debate": 0}
     matches = {"cloud": [], "council": [], "debate": []}
@@ -398,9 +149,6 @@ def keyword_smart_analyze(prompt: str) -> dict:
         scores["debate"] += 2
 
     suggested_mode = max(scores, key=scores.get)
-    if scores[suggested_mode] == 0:
-        suggested_mode = "cloud"
-
     return {
         "suggested_mode": suggested_mode,
         "scores": scores,
@@ -417,9 +165,6 @@ def keyword_smart_analyze(prompt: str) -> dict:
 
 
 def normalize_smart_mode(data: dict, fallback: dict) -> dict:
-    """
-    Sanitizes AI classifier output so the frontend always receives a stable shape.
-    """
     allowed_modes = {"cloud", "council", "debate"}
     allowed_complexity = {"low", "medium", "high"}
     allowed_risk = {"low", "medium", "high"}
@@ -443,83 +188,93 @@ def normalize_smart_mode(data: dict, fallback: dict) -> dict:
     needs_tools = data.get("needs_tools", [])
     if not isinstance(needs_tools, list):
         needs_tools = []
-    needs_tools = [str(tool).strip() for tool in needs_tools if str(tool).strip()][:6]
 
     reason = str(data.get("reason", fallback.get("reason", ""))).strip()
     if not reason:
         reason = fallback.get("reason", "Smart Mode selected the most suitable mode.")
 
-    task_type = str(data.get("task_type", fallback.get("task_type", "unknown"))).strip() or "unknown"
-
     return {
         "suggested_mode": suggested_mode,
         "scores": fallback["scores"],
         "matches": fallback["matches"],
-        "task_type": task_type,
+        "task_type": str(data.get("task_type", fallback.get("task_type", "unknown"))).strip() or "unknown",
         "complexity": complexity,
         "risk_level": risk_level,
         "reason": reason,
-        "needs_tools": needs_tools,
+        "needs_tools": [str(tool).strip() for tool in needs_tools if str(tool).strip()][:6],
         "fallback_mode": fallback_mode,
         "classifier": "ai",
         "message": f"Smart Mode recommends {suggested_mode}: {reason}",
     }
 
 
+@app.get("/")
+def root():
+    return {"message": "AI Empire API running"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "providers": provider_health()}
+
+
+@app.get("/providers")
+def providers():
+    return {
+        "openrouter": bool(os.getenv("OPENROUTER_API_KEY", "").strip()),
+        "openrouter_model": DEFAULT_MODEL,
+        "providers": provider_health(),
+    }
+
+
 @app.post("/chat/smart/analyze")
 def smart_analyze(req: ChatRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    prompt = _clean_prompt(req.prompt)
+    fallback = keyword_smart_analyze(prompt)
 
-    fallback = keyword_smart_analyze(req.prompt)
+    classifier_prompt = f"""Classify this prompt for an AI Council app.
 
-    classifier_prompt = f"""You are the routing brain for an AI Council app.
+Modes:
+- cloud: simple, fast, direct answers.
+- council: comparisons, recommendations, reviews, multi-perspective answers.
+- debate: complex planning, architecture, risk, strategy, or high-stakes decisions.
 
-Choose the best mode for the user's prompt:
-- cloud: simple, fast, direct answers; definitions; small fixes; casual questions.
-- council: comparisons, recommendations, reviews, multi-perspective opinions.
-- debate: complex planning, architecture, risks, strategy, safety, security, legal/medical/financial caution, major decisions, or anything needing critique.
-
-Return ONLY valid JSON with this exact shape:
+Return only valid JSON:
 {{
   "suggested_mode": "cloud" | "council" | "debate",
   "task_type": "short_label",
   "complexity": "low" | "medium" | "high",
   "risk_level": "low" | "medium" | "high",
   "reason": "one short sentence",
-  "needs_tools": ["optional_tool_labels"],
+  "needs_tools": [],
   "fallback_mode": "cloud" | "council" | "debate"
 }}
 
-User prompt:
-{req.prompt}
+Prompt:
+{prompt}
 """
+    system_prompt = "You classify prompts. Do not answer the prompt. Return strict JSON only."
 
-    system_prompt = (
-        "You classify user prompts for routing. "
-        "Do not answer the prompt. Return strict JSON only. No markdown."
-    )
+    try:
+        result = call_openrouter(classifier_prompt, DEFAULT_MODEL, system_prompt)
+    except HTTPException:
+        return fallback
 
-    result = call_openrouter(classifier_prompt, DEFAULT_MODEL, system_prompt)
     raw = (result.get("answer") or "").strip()
-
     if result.get("error") or not raw:
         return fallback
 
     try:
-        # Handles accidental fenced JSON without trusting prose around it.
         cleaned = raw.replace("```json", "").replace("```", "").strip()
-        data = json.loads(cleaned)
-        return normalize_smart_mode(data, fallback)
-    except Exception:
+        return normalize_smart_mode(json.loads(cleaned), fallback)
+    except (ValueError, TypeError):
         return fallback
+
 
 @app.post("/chat/cloud")
 def chat_cloud(req: ChatRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-
-    result = call_openrouter(req.prompt, DEFAULT_MODEL)
+    prompt = _clean_prompt(req.prompt)
+    result = call_openrouter(prompt)
     return {
         "mode": "cloud",
         "model": DEFAULT_MODEL,
@@ -530,191 +285,17 @@ def chat_cloud(req: ChatRequest):
 
 @app.post("/chat/council")
 def chat_council(req: ChatRequest):
-    """
-    Council Mode: All models answer the same prompt in parallel.
-    Now includes provider/label metadata and runs in parallel (not sequential).
-    """
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    prompt = _clean_prompt(req.prompt)
+    return run_parallel_answers(prompt)
 
-    results = parallel_council_call(req.prompt)
-    return {
-        "mode": "council",
-        "answer": results,
-    }
+
+@app.post("/council")
+def council(req: ChatRequest):
+    prompt = _clean_prompt(req.prompt)
+    return run_council(prompt)
 
 
 @app.post("/chat/council/debate")
 def chat_council_debate(req: ChatRequest):
-    """
-    Debate Mode — Full 3-round autonomous council:
-
-    ROUND 0 — Role Negotiation:
-      Each model reads the prompt and proposes its own role.
-      Roles are injected into subsequent system prompts.
-
-    ROUND 1 — Independent Answers (parallel):
-      Each model answers from its negotiated role perspective.
-      Models do not see each other's answers yet.
-
-    ROUND 2 — Critique and Revision (parallel):
-      Each model receives ALL Round 1 answers with attribution.
-      Each model must: identify gaps, challenge an assumption,
-      then produce an improved answer from its role's lens.
-
-    SYNTHESIS — Auditable Final Answer:
-      A structured synthesis that surfaces genuine disagreements,
-      points of consensus, and a confidence-rated final answer.
-      The human can see exactly where models diverged.
-    """
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-
-    # ── ROUND 0: Role Negotiation ────────────────────────────────────────────
-    negotiated_roles = negotiate_roles(req.prompt)
-
-    # ── ROUND 1: Independent Answers ─────────────────────────────────────────
-    # Each model gets a system prompt with its negotiated role baked in.
-    # This is what makes the role real — without this injection, role
-    # negotiation is theater. The role must constrain actual behavior.
-    round1_system_prompts = {
-        model_info["id"]: (
-            f"You are a {negotiated_roles.get(model_info['id'], 'Analyst')} "
-            f"in a multi-model AI reasoning council.\n"
-            f"Approach this question specifically through the lens of a "
-            f"{negotiated_roles.get(model_info['id'], 'Analyst')}.\n"
-            f"Be direct, specific, and substantive. Avoid generic platitudes.\n"
-            f"Do not mention that you are part of a council or that other models exist."
-        )
-        for model_info in COUNCIL_MODELS
-    }
-
-    round1_prompt = (
-        f"Question: {req.prompt}\n\n"
-        f"Answer from your role's perspective. Be clear and specific."
-    )
-
-    round1 = parallel_council_call(round1_prompt, round1_system_prompts)
-
-    # Bail out early if all models failed
-    if not any(data["answer"] for data in round1.values()):
-        return {
-            "mode": "council_debate",
-            "final_answer": "No valid responses from any council model.",
-            "full_synthesis": "",
-            "disagreements": [],
-            "consensus_points": [],
-            "confidence": "Low",
-            "confidence_reason": "All models failed to respond.",
-            "round0_roles": negotiated_roles,
-            "round1": round1,
-            "round2": {},
-        }
-
-    # Build structured Round 1 context for Round 2.
-    # Attribution is explicit: each block shows which model said what,
-    # and what role they were playing. This is what enables real critique —
-    # models know who said what and can target specific claims.
-    round1_context = "\n\n".join([
-        (
-            f"[{data['label']} ({data['provider']}) — "
-            f"Role: {negotiated_roles.get(mid, 'Analyst')}]\n"
-            f"{data['answer']}"
-        )
-        for mid, data in round1.items()
-        if data["answer"]
-    ])
-
-    # ── ROUND 2: Critique and Revision ───────────────────────────────────────
-    round2_system_prompts = {
-        model_info["id"]: (
-            f"You are a {negotiated_roles.get(model_info['id'], 'Analyst')} "
-            f"in an AI reasoning council.\n"
-            f"You have now seen what the other council members said in Round 1.\n"
-            f"Your job is NOT to agree or synthesize — it is to critique and improve.\n"
-            f"Stay in your role as {negotiated_roles.get(model_info['id'], 'Analyst')}. "
-            f"Find what others missed through your specific lens.\n"
-            f"Intellectual disagreement is expected and valuable here."
-        )
-        for model_info in COUNCIL_MODELS
-    }
-
-    round2_prompt = (
-        f"Original question: {req.prompt}\n\n"
-        f"━━━ ROUND 1 COUNCIL ANSWERS ━━━\n"
-        f"{round1_context}\n"
-        f"━━━ END ROUND 1 ━━━\n\n"
-        f"Your tasks as your assigned role:\n"
-        f"1. Identify the single most important gap, error, or overlooked angle "
-        f"in the other answers above. Be specific — name what was missed.\n"
-        f"2. Challenge at least one assumption present across the answers.\n"
-        f"3. Write your IMPROVED answer that addresses what others missed.\n\n"
-        f"Be direct. Softening your critique makes the council weaker.\n"
-        f"Return only your improved answer — no preamble."
-    )
-
-    round2 = parallel_council_call(round2_prompt, round2_system_prompts)
-
-    # ── SYNTHESIS ─────────────────────────────────────────────────────────────
-    valid_round2 = {mid: data for mid, data in round2.items() if data["answer"]}
-
-    if valid_round2:
-        revised_context = "\n\n".join([
-            (
-                f"[{data['label']} ({data['provider']}) — "
-                f"Role: {negotiated_roles.get(mid, 'Analyst')}]\n"
-                f"{data['answer']}"
-            )
-            for mid, data in valid_round2.items()
-        ])
-
-        synthesis_prompt = (
-            f"You are synthesizing the output of an AI reasoning council.\n\n"
-            f"Original question:\n{req.prompt}\n\n"
-            f"━━━ ROUND 2 COUNCIL ANSWERS ━━━\n"
-            f"{revised_context}\n"
-            f"━━━ END ROUND 2 ━━━\n\n"
-            f"Produce a structured synthesis in this EXACT format. "
-            f"Do not skip any section.\n\n"
-            f"POINTS OF GENUINE DISAGREEMENT:\n"
-            f"- [Each real point where council members disagreed — be specific]\n\n"
-            f"POINTS OF CONSENSUS:\n"
-            f"- [What all or most members agreed on]\n\n"
-            f"FINAL ANSWER:\n"
-            f"[The best possible answer combining the strongest points. "
-            f"Be comprehensive and practical. "
-            f"Do not mention the council, the debate, or the models.]\n\n"
-            f"CONFIDENCE: [Low / Medium / High]\n"
-            f"CONFIDENCE REASON: [One sentence explaining the confidence level]"
-        )
-
-        synthesis_result = call_openrouter(synthesis_prompt, DEFAULT_MODEL)
-        raw_synthesis = synthesis_result["answer"] or ""
-        parsed = parse_synthesis(raw_synthesis)
-
-    else:
-        raw_synthesis = ""
-        parsed = {
-            "final_answer": "No valid revised responses from council models.",
-            "disagreements": [],
-            "consensus_points": [],
-            "confidence": "Low",
-            "confidence_reason": "Round 2 produced no valid responses.",
-        }
-
-    return {
-        "mode": "council_debate",
-        # Primary answer — clean, ready for display
-        "final_answer": parsed["final_answer"],
-        # Audit trail — shows the reasoning behind the final answer
-        "disagreements": parsed["disagreements"],
-        "consensus_points": parsed["consensus_points"],
-        "confidence": parsed["confidence"],
-        "confidence_reason": parsed["confidence_reason"],
-        # Full raw synthesis — useful for debugging or advanced UI
-        "full_synthesis": raw_synthesis,
-        # Round data — full transparency into the debate
-        "round0_roles": negotiated_roles,
-        "round1": round1,
-        "round2": round2,
-    }
+    prompt = _clean_prompt(req.prompt)
+    return run_council(prompt)

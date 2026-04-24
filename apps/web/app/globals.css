@@ -227,6 +227,20 @@ textarea:disabled {
 
 .smartBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.cancelBtn {
+  padding: 13px 18px;
+  background: #2d0a0a;
+  border: 1px solid #7f1d1d;
+  border-radius: var(--radius);
+  color: #fca5a5;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cancelBtn:hover { background: #3b1010; }
+
 .hint {
   font-size: 12px;
   color: var(--text-muted);
@@ -410,6 +424,12 @@ textarea:disabled {
   color: var(--text-secondary);
 }
 
+.smartReason {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 14px;
+}
+
 .smartActions {
   display: flex;
   gap: 8px;
@@ -488,7 +508,63 @@ textarea:disabled {
   color: var(--text-primary);
   font-size: 15px;
   line-height: 1.75;
-  white-space: pre-wrap;
+}
+
+.markdown,
+.answerText,
+.finalText,
+.modelText {
+  white-space: normal;
+}
+
+.markdown p,
+.answerText p,
+.finalText p,
+.modelText p {
+  margin-bottom: 12px;
+}
+
+.markdown p:last-child,
+.answerText p:last-child,
+.finalText p:last-child,
+.modelText p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown ul,
+.markdown ol,
+.answerText ul,
+.answerText ol,
+.finalText ul,
+.finalText ol,
+.modelText ul,
+.modelText ol {
+  padding-left: 22px;
+  margin: 10px 0;
+}
+
+.markdown code,
+.answerText code,
+.finalText code,
+.modelText code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: #020617;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.markdown pre,
+.answerText pre,
+.finalText pre,
+.modelText pre {
+  overflow: auto;
+  background: #020617;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin: 12px 0;
 }
 
 /* ── Council grid ────────────────────────────────────────────────────────────── */
@@ -659,6 +735,50 @@ textarea:disabled {
   margin-top: 4px;
 }
 
+.roleCardReason {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.roleCardFallback {
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.stageStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stagePill {
+  padding: 4px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stagePill--complete {
+  background: #052e16;
+  border-color: #166534;
+  color: #86efac;
+}
+
+.stagePill--partial {
+  background: #431407;
+  border-color: #9a3412;
+  color: #fdba74;
+}
+
 /* Final answer */
 .finalSection {
   padding: 24px 20px;
@@ -693,7 +813,6 @@ textarea:disabled {
   font-size: 15px;
   line-height: 1.8;
   color: var(--text-primary);
-  white-space: pre-wrap;
 }
 
 /* Insights row */
@@ -738,6 +857,74 @@ textarea:disabled {
 
 .insightBox--disagree .insightList li { color: #fde68a; }
 .insightBox--consensus .insightList li { color: #a7f3d0; }
+
+.providerStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+
+.providerPill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.providerPill--ready {
+  color: #86efac;
+  background: #052e16;
+  border-color: #166534;
+}
+
+.providerPill--missing {
+  color: #fca5a5;
+  background: #2d0a0a;
+  border-color: #7f1d1d;
+}
+
+.historyBox {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.historyTitle {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.historyItem {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 9px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #13223a;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  cursor: pointer;
+}
+
+.historyItem span {
+  flex: 0 0 auto;
+  min-width: 56px;
+  color: var(--accent-blue);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.historyItem:hover { color: var(--text-primary); }
 
 /* ── Responsive ──────────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
