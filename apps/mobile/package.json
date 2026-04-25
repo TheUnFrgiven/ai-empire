@@ -1,0 +1,22 @@
+{
+  "name": "ai-council-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --lan",
+    "start:tunnel": "expo start --tunnel",
+    "ios": "expo start --ios",
+    "android": "expo start --android"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~55.0.10",
+    "expo": "~55.0.17",
+    "react": "19.2.0",
+    "react-native": "0.83.6"
+  },
+  "overrides": {
+    "postcss": "^8.5.10",
+    "uuid": "^14.0.0"
+  }
+}

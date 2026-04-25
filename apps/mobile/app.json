@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "AI Council",
+    "slug": "ai-council",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "aicouncil",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aiempire.council",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSExceptionDomains": {
+            "192.168.1.101": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true
+            }
+          }
+        }
+      }
+    },
+    "android": {
+      "package": "com.aiempire.council"
+    },
+    "extra": {
+      "apiUrlHint": "Set EXPO_PUBLIC_API_URL to your computer LAN URL, for example http://192.168.1.101:8001"
+    }
+  }
+}

@@ -14,6 +14,7 @@ apps/api/venv
 .env
 .env.local
 *.env
+*.env.local
 
 # Logs
 *.log
@@ -34,6 +35,7 @@ Thumbs.db
 dist/
 build/
 .next/
+apps/mobile/.expo/
 
 # Temporary files
 *.tmp
