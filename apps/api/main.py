@@ -3,18 +3,23 @@ import os
 from typing import Any, Optional
 
 import requests
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+try:
+    from .config import load_environment
+except ImportError:
+    from config import load_environment
+
+
+load_environment()
 
 try:
     from .council import provider_health, run_council, run_parallel_answers
 except ImportError:
     from council import provider_health, run_council, run_parallel_answers
 
-
-load_dotenv()
 
 app = FastAPI(title="AI Empire API")
 

@@ -45,6 +45,13 @@ class GrokProvider:
                     error_msg = response.json().get("error", {}).get("message", error_msg)
                 except Exception:
                     pass
+                if response.status_code == 401:
+                    error_msg = "xAI rejected XAI_API_KEY. Check that the key is valid."
+                elif response.status_code == 403:
+                    error_msg = (
+                        "xAI returned 403. Check that XAI_API_KEY has API access, billing, "
+                        "and permission for the selected Grok model."
+                    )
                 return AIResponse(
                     provider=self.provider_name,
                     model=self.model_name,

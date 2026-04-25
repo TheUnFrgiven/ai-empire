@@ -48,9 +48,15 @@ class GeminiProvider:
                 error=None,
             )
         except Exception as e:
+            error = str(e)
+            if "RESOURCE_EXHAUSTED" in error or "429" in error:
+                error = (
+                    "Gemini quota is exhausted or not enabled for this key. "
+                    "Check Google AI Studio billing/limits for GEMINI_API_KEY."
+                )
             return AIResponse(
                 provider=self.provider_name,
                 model=self.model_name,
                 text="",
-                error=str(e),
+                error=error,
             )

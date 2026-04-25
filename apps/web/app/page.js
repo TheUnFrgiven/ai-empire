@@ -7,7 +7,7 @@ import { PromptBox } from "./components/PromptBox";
 import { Results } from "./components/Results";
 import { SmartRecommendation } from "./components/SmartRecommendation";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 const DEBATE_STEPS = [
   { label: "Collecting independent answers", sub: "Providers answer without seeing each other" },
@@ -221,7 +221,7 @@ export default function Page() {
                   const state = index < debateStep ? "done" : index === debateStep ? "active" : "pending";
                   return (
                     <div key={step.label} className={`step step--${state}`}>
-                      <div className="stepDot">{state === "done" ? "✓" : index + 1}</div>
+                      <div className="stepDot">{state === "done" ? "OK" : index + 1}</div>
                       <div className="stepInfo">
                         <div className="stepLabel">{step.label}</div>
                         <div className="stepSub">{step.sub}</div>

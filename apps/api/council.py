@@ -3,6 +3,14 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
+    from .config import load_environment
+except ImportError:
+    from config import load_environment
+
+
+load_environment()
+
+try:
     from .providers.gemini import GeminiProvider
     from .providers.grok import GrokProvider
     from .providers.ollama import OllamaProvider

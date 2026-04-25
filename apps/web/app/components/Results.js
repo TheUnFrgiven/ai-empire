@@ -15,7 +15,7 @@ function Collapsible({ id, title, count, children }) {
       <button className="collapsibleTrigger" onClick={() => setOpen((value) => !value)}>
         <span className="collapsibleTitle">{title}</span>
         <span className="collapsibleMeta">
-          {count} item{count !== 1 ? "s" : ""} <span className="chevron">{open ? "▲" : "▼"}</span>
+          {count} item{count !== 1 ? "s" : ""} <span className="chevron">{open ? "^" : "v"}</span>
         </span>
       </button>
       {open && <div className="collapsibleBody" id={id}>{children}</div>}
